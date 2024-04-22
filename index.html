@@ -4,9 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WebGPU Compute Rasterizer</title>
+
+	<style>
+		#info {
+			position: absolute;
+			top: 0;
+			left: 0;
+			margin: 0;
+			padding: 0.5em;
+			background-color: rgba(0, 0, 0, 0.8);
+			color: white;
+		}
+	</style>
   </head>
   <body>
     <canvas></canvas>
+	<pre id="info"></pre>
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>
