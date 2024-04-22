@@ -3,16 +3,32 @@ import '../style.css'
 import fullscreenQuadWGSL from '../shaders/fullscreenQuad.wgsl?raw';
 import computeRasterizerWGSL from '../shaders/computeRasterizer.wgsl?raw';
 import { loadModel } from './loadModel.js';
+import { TimingHelper, RollingAverage } from './timing.js';
 
 init();
 
+var canTimestamp = false;
+var timingHelper = null;
+const fpsAverage = new RollingAverage();
+const jsAverage = new RollingAverage();
+const gpuAverage = new RollingAverage();
+
 async function init() {
   const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice();
+  canTimestamp = adapter.features.has('timestamp-query');
+  const device = await adapter.requestDevice({
+	requiredFeatures: [
+		...(canTimestamp ? ['timestamp-query'] : []),
+	],
+  });
+  timingHelper = new TimingHelper(device);
   const canvas = document.querySelector("canvas");
   const context = canvas.getContext("webgpu");
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+
+  const infoElem = document.querySelector('#info');
+  let gpuTime = 0;
 
   const devicePixelRatio = window.devicePixelRatio || 1;
   const presentationSize = [
@@ -32,13 +48,50 @@ async function init() {
   const { addComputePass, outputColorBuffer } = createComputePass(presentationSize, device, verticesArray);
   const { addFullscreenPass } = createFullscreenPass(presentationFormat, device, presentationSize, outputColorBuffer);
 
-  function draw() {
+  let then = 0;
+  function draw(now) {
+	now *= 0.001;  // convert to seconds
+    const deltaTime = now - then;
+    then = now;
+	const startTime = performance.now();
+
     const commandEncoder = device.createCommandEncoder();
 
     addComputePass(commandEncoder);
     addFullscreenPass(context, commandEncoder);
 
+	// if (canTimestamp) {
+	// 	commandEncoder.resolveQuerySet(perf.querySet, 0, perf.querySet.count, perf.resolveBuffer, 0);
+	// 	if (perf.resultBuffer.mapState === 'unmapped') {
+	// 		encoder.copyBufferToBuffer(perf.resolveBuffer, 0, perf.resultBuffer, 0, perf.resultBuffer.size);
+	// 	}
+	// }
+
     device.queue.submit([commandEncoder.finish()]);
+
+	// if (perf.canTimestamp && perf.resultBuffer.mapState === 'unmapped') {
+	// 	perf.resultBuffer.mapAsync(GPUMapMode.READ).then(() => {
+	// 		const times = new BigInt64Array(perf.resultBuffer.getMappedRange());
+	// 		gpuTime = Number(times[1] - times[0]);
+	// 		perf.resultBuffer.unmap();
+	// 	});
+	// }
+
+	timingHelper.getResult().then(gpuTime => {
+        gpuAverage.addSample(gpuTime / 1000000);
+    });
+
+	const jsTime = performance.now() - startTime;
+
+    fpsAverage.addSample(1 / deltaTime);
+    jsAverage.addSample(jsTime);
+
+    infoElem.textContent = `\
+delta: ${deltaTime.toFixed(3)}s
+fps: ${fpsAverage.get().toFixed(1)}
+js: ${jsAverage.get().toFixed(1)}ms
+gpu: ${canTimestamp ? `${gpuAverage.get().toFixed(1)}ms` : 'N/A'}
+	`;
 
     requestAnimationFrame(draw);
   }
@@ -138,7 +191,8 @@ function createFullscreenPass(presentationFormat, device, presentationSize, fina
       .getCurrentTexture()
       .createView();
 
-      const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+	  const passEncoder = timingHelper.beginRenderPass(commandEncoder, renderPassDescriptor);
+    //   const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
       passEncoder.setPipeline(fullscreenQuadPipeline);
       passEncoder.setBindGroup(0, fullscreenQuadBindGroup);
       passEncoder.draw(6, 1, 0, 0);
@@ -247,7 +301,7 @@ function createComputePass(presentationSize, device, verticesArray) {
     const viewMatrix = mat4.create();
     const now = Date.now() / 1000;
     // Move the camera 
-    mat4.translate(viewMatrix, viewMatrix, vec3.fromValues(4, 3, -10));
+    mat4.translate(viewMatrix, viewMatrix, vec3.fromValues(3.5, 2, -10));
     const modelViewProjectionMatrix = mat4.create();
     const modelMatrix = mat4.create();
     // Rotate model over time
@@ -271,7 +325,7 @@ function createComputePass(presentationSize, device, verticesArray) {
     passEncoder.setBindGroup(0, bindGroup);
     passEncoder.dispatchWorkgroups(totalTimesToRun);
     // Rasterizer pass
-    totalTimesToRun = Math.ceil((vertexCount / 3) / 256);
+    totalTimesToRun = Math.ceil((vertexCount / 3) / 200);
     passEncoder.setPipeline(rasterizerPipeline);
     passEncoder.setBindGroup(0, bindGroup);
     passEncoder.dispatchWorkgroups(totalTimesToRun);
